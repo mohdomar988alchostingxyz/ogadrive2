@@ -705,7 +705,20 @@ export default function App() {
   const handleDownloadFile = async (fileId: string) => {
     try {
       const res = await driveApi('download-file', { method: 'POST', params: { fileId } });
+      
       if (res.ok) {
+        const contentType = res.headers.get('content-type');
+        
+        // Handle large file redirect
+        if (contentType?.includes('application/json')) {
+          const data = await res.json();
+          if (data.redirect && data.url) {
+            // Open download link in new tab
+            window.open(data.url, '_blank');
+            return;
+          }
+        }
+        
         const disposition = res.headers.get('content-disposition');
         let filename = 'download';
         if (disposition) {
@@ -721,6 +734,8 @@ export default function App() {
         a.click();
         window.URL.revokeObjectURL(url);
         a.remove();
+      } else if (res.status === 413) {
+        setError('File too large to download through the server. Try downloading from Google Drive directly.');
       } else {
         setError('Download failed');
       }

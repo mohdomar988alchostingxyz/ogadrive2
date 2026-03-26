@@ -243,11 +243,17 @@ serve(async (req) => {
         }
 
         const fileName = key.split("/").pop() || key;
-        return new Response(res.body, {
+        const contentType = res.headers.get("content-type") || "application/octet-stream";
+        
+        // Convert response to ArrayBuffer for proper streaming
+        const arrayBuffer = await res.arrayBuffer();
+        
+        return new Response(arrayBuffer, {
           headers: {
             ...corsHeaders,
-            "Content-Type": res.headers.get("content-type") || "application/octet-stream",
+            "Content-Type": contentType,
             "Content-Disposition": `attachment; filename="${fileName}"`,
+            "Content-Length": arrayBuffer.byteLength.toString(),
           },
         });
       }

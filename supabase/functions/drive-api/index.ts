@@ -695,19 +695,28 @@ serve(async (req) => {
       const fileId = url.searchParams.get("fileId");
       
       // Get file metadata
-      const metaRes = await driveRequest(accessToken, `/files/${fileId}?fields=id,name,mimeType`);
+      const metaRes = await driveRequest(accessToken, `/files/${fileId}?fields=id,name,mimeType,size`);
       const fileMeta = await metaRes.json();
+      const fileSize = parseInt(fileMeta.size || "0");
 
       if (fileMeta.mimeType === "application/vnd.google-apps.folder") {
-        // For folders, create a simple ZIP
+        // For folders, create a simple ZIP (limit to 100MB to avoid timeout)
+        if (fileSize > 100 * 1024 * 1024) {
+          return new Response(JSON.stringify({ error: "Folder too large to download as ZIP. Please download files individually." }), {
+            status: 413, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        
         const { default: JSZip } = await import("https://esm.sh/jszip@3.10.1");
         const zip = new JSZip();
 
         const addFolderToZip = async (fId: string, zipFolder: any) => {
           const q = encodeURIComponent(`'${fId}' in parents and trashed = false`);
-          const listRes = await driveRequest(accessToken, `/files?q=${q}&fields=files(id,name,mimeType)`);
+          const listRes = await driveRequest(accessToken, `/files?q=${q}&fields=files(id,name,mimeType,size)`);
           const listData = await listRes.json();
           for (const f of listData.files || []) {
+            const fSize = parseInt(f.size || "0");
+            if (fSize > 50 * 1024 * 1024) continue; // Skip files > 50MB
             if (f.mimeType === "application/vnd.google-apps.folder") {
               const subFolder = zipFolder.folder(f.name);
               await addFolderToZip(f.id, subFolder);
@@ -730,7 +739,24 @@ serve(async (req) => {
           },
         });
       } else {
-        // Regular file download
+        // For large files (>50MB), use redirect approach with webContentLink
+        if (fileSize > 50 * 1024 * 1024) {
+          // Get a public download link
+          const linkRes = await driveRequest(accessToken, `/files/${fileId}?fields=webContentLink`);
+          const linkData = await linkRes.json();
+          
+          if (linkData.webContentLink) {
+            return new Response(JSON.stringify({ 
+              redirect: true, 
+              url: linkData.webContentLink,
+              filename: fileMeta.name 
+            }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
+        
+        // For smaller files, stream directly
         const fileRes = await driveRequest(accessToken, `/files/${fileId}?alt=media`);
         const fileData = await fileRes.arrayBuffer();
         
@@ -739,6 +765,7 @@ serve(async (req) => {
             ...corsHeaders,
             "Content-Type": fileMeta.mimeType || "application/octet-stream",
             "Content-Disposition": `attachment; filename="${fileMeta.name}"`,
+            "Content-Length": fileData.byteLength.toString(),
           },
         });
       }
